@@ -1,405 +1,80 @@
-# 🎯 S-MoE Integration in U-Net Architecture
+# **Causal Speech Enhancement Based on a Two-Branch Nested U-Net Architecture Using Self-Supervised Speech Embeddings**   
+   
+This is an official repo of the paper "**Causal Speech Enhancement Based on a Two-Branch Nested U-Net Architecture Using Self-Supervised Speech Embeddings**," which is accepted to ICASSP2025.   
 
-## 📋 **1. Overall S-MoE U-Net Architecture**
+**Abstract**：This paper presents a causal speech enhancement (SE) model based on a two-branch complex nested U-Net (CNUNet-TB) architecture combined with a two-stage (TS) training method that leverages speech embeddings from a large self-supervised speech representation learning (SRL) model. The proposed architecture enhances performance by simultaneously estimating complex masks and the speech spectrum, effectively handling complex speech data. The SE model is initially trained by fusing the self-supervised speech embeddings with the model’s latent vectors, which are then stored for the second stage of training. In the second stage, the SE model is trained to replicate these latent vectors without relying on the SRL model, ensuring causality and eliminating the need for the SRL model during inference. Experimental results demonstrate that the proposed CNUNet-TB-TS effectively replicates the stored latent vectors with strong speaker representation, achieving superior performance compared to recent causal SE models.
 
-```
-🏗️ STANDARD U-NET STRUCTURE WITH S-MoE INTEGRATION:
+## Update:  
+* **2024.09.24** Upload codes  
+* **2024.10.14** Upload demo samples  
 
-Input (Complex Spec) [batch, 1, 257, 188]
-         ↓
-    Global Router ← Makes ONE routing decision for entire network
-         ↓
-    Input Conv [1 → 45 channels]
-         ↓
-┌─── Encoder Path ───┐           ┌─── Decoder Path ───┐
-│                    │           │                    │
-│ EncoderBlock 1     │           │ DecoderBlock 4     │
-│ [45 → 90]          │     ┌─────│ [180 → 90] + Skip │
-│        ↓           │     │     │        ↓           │
-│ EncoderBlock 2     │     │     │ S-MoE Layer ← Optional
-│ [90 → 180] + S-MoE │ ────┼─────│        ↓           │
-│        ↓           │     │     │ DecoderBlock 3     │
-│ EncoderBlock 3     │     │     │ [90 → 45] + Skip   │
-│ [180 → 360]        │ ────┼─────│        ↓           │
-│        ↓           │     │     │ DecoderBlock 2     │
-│ Bottleneck + S-MoE │     │     │ [45 → 45] + Skip   │
-└────────────────────┘     │     └────────────────────┘
-                           │              ↓
-                      Skip Connections   Output Conv
-                                         [45 → 1]
-                                              ↓
-                                    Enhanced Mask [batch, 1, 257, 188]
-```
+## Requirements 
+This repo is tested with Ubuntu 22.04, PyTorch 2.0.4, Python3.10, and CUDA12.2. For package dependencies, you can check: requirements.txt  
 
-## 🧠 **2. Global Routing Strategy**
 
-### **Key Innovation: ONE Router for ALL S-MoE Layers**
+## Getting started    
+1. Install the necessary libraries.   
+2. Set directory paths for your dataset. ([options.py](https://github.com/seorim0/SE-using-SRL-Model/blob/main/options.py)) 
+```   
+# dataset path
+noisy_dirs_for_train = '../Dataset/train/noisy/'   
+noisy_dirs_for_valid = '../Dataset/valid/noisy/'   
+```   
+* You need to modify the `find_pair` function in [utils](https://github.com/seorim0/SE-using-SRL-Model/blob/main/utils/progress.py) according to the data file name you have.        
+* You can simply change any parameter settings if you need to adjust them.   
+3. Run [train_interface.py](https://github.com/seorim0/SE-using-SRL-Model/blob/main/train_interface.py)
 
-```python
-class SMoEEnhancedUNet(nn.Module):
-    def __init__(self, config):
-        # ✅ SINGLE GLOBAL ROUTER - Makes decisions for entire network
-        self.global_router = GlobalDistortionRouter(config)
-        
-        # All S-MoE layers will use the same routing decision
-        # This ensures consistency across the entire network
-        
-    def forward(self, x, distortion_labels=None):
-        # 1. MAKE SINGLE ROUTING DECISION
-        routing_decision = self.global_router(x, distortion_labels)
-        # Returns: {'expert_weights': [batch, n_experts], 'confidence': [batch, 1]}
-        
-        # 2. ALL S-MoE LAYERS USE THE SAME ROUTING DECISION
-        for layer in self.encoder_layers:
-            if 'smoe' in layer:
-                features = layer['smoe'](features, routing_decision)  # Same routing!
-                
-        if 'smoe' in self.bottleneck:
-            features = self.bottleneck['smoe'](features, routing_decision)  # Same routing!
-            
-        for layer in self.decoder_layers:
-            if 'smoe' in layer:
-                features = layer['smoe'](features, routing_decision)  # Same routing!
-```
+## Results and Analysis
+![1](https://github.com/user-attachments/assets/48fb343e-56ad-46d1-9ee7-4ef75d0c8286)
+- First, converting NUNet to a complex version (CNUNet) yields significant performance improvements. Additionally, the two-branch version of CNUNet (CNUNet-TB) improves all metrics compared to the single-branch version (CNUNet-SB), though the improvement was marginal. The incorporation of WavLM Large’s speech embeddings in stage 1 significantly improved performance across all metrics. When the speech embeddings were replicated in Stage-2, where causality is enforced and the SRL model is removed during inference, the model still achieved impressive results.
 
-**Why Global Routing?**
-- **Consistency**: Same distortion → same experts across all layers
-- **Efficiency**: Only one routing computation per sample
-- **Interpretability**: Clear understanding of which experts are active
+![2](https://github.com/user-attachments/assets/cbf9cc6f-33ae-4b73-84ce-54495f815169)
+- Recent SE models effectively remove background noise (measured via BAK), but tend to over-suppress, leading to speech distortion and even lower signal clarity (SIG) scores than the original noisy speech. However, our proposed model significantly improved the SIG score while enhancing the BAK score also, resulting in an overall improvement (OVL). These results confirm that the proposed model produces enhanced speech perceived as both natural and intelligible, even in causal settings.
 
-## 🎪 **3. Strategic S-MoE Placement in U-Net**
+![3](https://github.com/user-attachments/assets/fb89886f-8e29-46ea-97b6-a30bc029a05d)
+- Our CNUNet-TB-TS achieved the highest PESQ score, and intelligibility-related metrics are significantly higher for our model compared to others.
 
-### **Placement Strategy:**
+![4](https://github.com/user-attachments/assets/3f17fcf9-08c4-40d1-b281-a2ad6f6c41d1)
+- We visualized the latent vectors using t-SNE, based on 384 utterances from 14 male and 14 female speakers among the training dataset. From this, two key observations are possible. First, when self-supervised speech embeddings are used (Stage-1), there is a clear separation between the speaker’s gender and some distinction between speakers, resulting in improved SE performance. This separation is likely due to WavLM Large, trained on a large-scale audio dataset, producing embeddings with strong speaker representations. Also, these results align with previous observations in [[ref]](https://arxiv.org/pdf/2302.11558), where injecting speaker gender embeddings into the SE model improves the SE performance. Second, this separation and clustering are still maintained even after Stage-2 training. This shows that our training strategy successfully retains the benefits of self-supervised speech embeddings in a causal SE model, leading to high signal clarity (CSIG and SIG in Tables I and II).
 
-```python
-def _build_encoder(self):
-    encoder_layers = nn.ModuleList()
-    
-    for i in range(self.n_layers):  # e.g., 5 layers for DCUNet-20
-        layer_dict = nn.ModuleDict()
-        
-        # ALWAYS: Standard U-Net processing
-        layer_dict['encoder_block'] = EncoderBlock(in_ch, out_ch)
-        
-        # CONDITIONAL: Add S-MoE at strategic positions
-        if i == 1 and 'early_encoder' in self.config.smoe_layer_positions:
-            layer_dict['smoe'] = SMoELayer(out_ch, 'early_encoder', self.config)
-        elif i == 2 and 'mid_encoder' in self.config.smoe_layer_positions:
-            layer_dict['smoe'] = SMoELayer(out_ch, 'mid_encoder', self.config)
-            
-        encoder_layers.append(layer_dict)
-    
-    return encoder_layers
-```
 
-### **Default Placement Configuration:**
+## Demo
+More demo samples can be found [here](https://github.com/seorim0/SE-using-SRL-Model/blob/main/demo/).  
 
-```python
-smoe_layer_positions = [
-    'early_encoder',   # Layer 1: After 45→90 expansion  
-    'mid_encoder',     # Layer 2: After 90→180 expansion
-    'bottleneck',      # Bottleneck: Highest semantic level
-    'mid_decoder',     # Decoder 2: During 180→90 reconstruction  
-    'late_decoder'     # Decoder 1: During 90→45 final refinement
-]
-```
+- Clean  
 
-## 🔄 **4. Detailed Forward Pass Flow**
+https://github.com/user-attachments/assets/91f1d067-184c-4035-8ea0-a3c08c1e93c0
 
-### **Complete Forward Pass with S-MoE:**
 
-```python
-def forward(self, x, distortion_labels=None):
-    # INPUT: Complex spectrogram [batch, 1, 257, 188]
-    
-    # STEP 1: GLOBAL ROUTING DECISION
-    routing_decision = self.global_router(x, distortion_labels)
-    # Output: {'expert_weights': [batch, 2], 'confidence': [batch, 1]}
-    # For 2-expert: expert_weights = [[0.8, 0.2], [0.1, 0.9], ...]
-    #               meaning [noise_weight, reverb_weight] per sample
-    
-    # STEP 2: INPUT PROCESSING
-    current = self.input_conv(x)  # [batch, 1, 257, 188] → [batch, 45, 257, 188]
-    skip_connections = []
-    
-    # STEP 3: ENCODER PATH WITH S-MoE
-    for i, layer_dict in enumerate(self.encoder_layers):
-        print(f"Encoder Layer {i}:")
-        
-        # Standard U-Net processing
-        skip, current = layer_dict['encoder_block'](current)
-        print(f"  After EncoderBlock: skip={skip.shape}, current={current.shape}")
-        
-        # S-MoE processing (if present)
-        if 'smoe' in layer_dict:
-            print(f"  Applying S-MoE at position: {layer_dict['smoe'].layer_position}")
-            skip = layer_dict['smoe'](skip, routing_decision)  # ← SAME ROUTING!
-            print(f"  After S-MoE: skip={skip.shape}")
-        
-        skip_connections.append(skip)
-        
-    # Example output:
-    # Encoder Layer 0: skip=[batch, 45, 257, 188], current=[batch, 45, 128, 94]
-    # Encoder Layer 1: skip=[batch, 90, 128, 94], current=[batch, 90, 64, 47]
-    #   Applying S-MoE at position: early_encoder
-    #   After S-MoE: skip=[batch, 90, 128, 94]
-    # Encoder Layer 2: skip=[batch, 180, 64, 47], current=[batch, 180, 32, 23]
-    #   Applying S-MoE at position: mid_encoder  
-    #   After S-MoE: skip=[batch, 180, 64, 47]
-    
-    # STEP 4: BOTTLENECK WITH S-MoE
-    current = self.bottleneck['bottleneck_block'](current)
-    if 'smoe' in self.bottleneck:
-        print(f"Applying S-MoE at bottleneck")
-        current = self.bottleneck['smoe'](current, routing_decision)  # ← SAME ROUTING!
-    
-    # STEP 5: DECODER PATH WITH S-MoE  
-    for i, layer_dict in enumerate(self.decoder_layers):
-        skip = skip_connections[-(i + 1)]  # Reverse order
-        
-        # Standard U-Net processing
-        current = layer_dict['decoder_block'](current, skip)
-        
-        # S-MoE processing (if present)
-        if 'smoe' in layer_dict:
-            current = layer_dict['smoe'](current, routing_decision)  # ← SAME ROUTING!
-    
-    # STEP 6: OUTPUT
-    mask = self.output_conv(current)  # [batch, 45, 257, 188] → [batch, 1, 257, 188]
-    enhanced_spec = mask * x
-    
-    return {
-        'enhanced_spec': enhanced_spec,
-        'mask': mask,
-        'routing_decision': routing_decision,
-        'expert_usage': self._compute_expert_usage(routing_decision)
-    }
-```
 
-## 🎯 **5. S-MoE Layer Implementation**
+- Noisy  
 
-### **Individual S-MoE Layer Structure:**
+https://github.com/user-attachments/assets/737f82cd-bb07-4f20-ab21-70f9a870c9fc
 
-```python
-class SMoELayer(nn.Module):
-    def __init__(self, input_dim, layer_position, config):
-        # Each S-MoE layer contains multiple experts
-        self.experts = nn.ModuleList([
-            DistortionSpecificExpert(input_dim, distortion_type, layer_position, config)
-            for distortion_type in range(config.n_experts)
-        ])
-        
-        # For 2-expert system:
-        # experts[0] = NoiseExpert
-        # experts[1] = ReverbExpert
-        
-    def forward(self, x, routing_decision):
-        # INPUT: x = [batch, channels, height, width]
-        # INPUT: routing_decision['expert_weights'] = [batch, n_experts]
-        
-        residual = x  # Store for residual connection
-        
-        expert_weights = routing_decision['expert_weights']  # [batch, 2]
-        batch_size = x.shape[0]
-        
-        if self.config.enable_multi_expert:
-            # MULTI-EXPERT MODE: Weighted combination
-            expert_outputs = []
-            for batch_idx in range(batch_size):
-                sample_input = x[batch_idx:batch_idx+1]
-                weights = expert_weights[batch_idx]  # [2] - [noise_weight, reverb_weight]
-                
-                # Process with both experts
-                noise_output = self.experts[0](sample_input)   # NoiseExpert
-                reverb_output = self.experts[1](sample_input)  # ReverbExpert
-                
-                # Weighted combination
-                combined = weights[0] * noise_output + weights[1] * reverb_output
-                expert_outputs.append(combined)
-            
-            output = torch.cat(expert_outputs, dim=0)
-        
-        else:
-            # SINGLE-EXPERT MODE: Choose best expert per sample
-            expert_indices = torch.argmax(expert_weights, dim=-1)  # [batch]
-            
-            expert_outputs = []
-            for batch_idx in range(batch_size):
-                sample_input = x[batch_idx:batch_idx+1]
-                expert_idx = expert_indices[batch_idx].item()
-                
-                expert_output = self.experts[expert_idx](sample_input)
-                expert_outputs.append(expert_output)
-            
-            output = torch.cat(expert_outputs, dim=0)
-        
-        # RESIDUAL CONNECTION: Very important!
-        return residual + output
-```
 
-## 🧪 **6. Two-Expert System Specific Implementation**
 
-### **Simplified 2-Expert Router:**
+- NUNet-TLS  
 
-```python
-class TwoExpertRouter(nn.Module):
-    def forward(self, complex_spec, distortion_labels=None):
-        batch_size = complex_spec.shape[0]
-        
-        if self.training and distortion_labels is not None:
-            # SUPERVISED ROUTING: Use ground truth labels
-            expert_weights = torch.zeros(batch_size, 2)  # [batch, 2]
-            
-            for i in range(batch_size):
-                label = distortion_labels[i].item()
-                if label == 0:  # NOISE_ONLY
-                    expert_weights[i] = torch.tensor([1.0, 0.0])  # Only noise expert
-                elif label == 1:  # REVERB_ONLY  
-                    expert_weights[i] = torch.tensor([0.0, 1.0])  # Only reverb expert
-                elif label == 2:  # BOTH
-                    expert_weights[i] = torch.tensor([0.5, 0.5])  # Both experts equally
-        
-        else:
-            # IMPLICIT ROUTING: Learn from audio features
-            features = self.extract_features(complex_spec)  # [batch, feature_dim]
-            routing_logits = self.routing_network(features)  # [batch, 3]
-            routing_probs = F.softmax(routing_logits, dim=-1)  # [batch, 3]
-            
-            # Convert to expert weights
-            expert_weights = torch.zeros(batch_size, 2)
-            expert_weights[:, 0] = routing_probs[:, 0] + routing_probs[:, 2]  # noise
-            expert_weights[:, 1] = routing_probs[:, 1] + routing_probs[:, 2]  # reverb
-        
-        return {
-            'expert_weights': expert_weights,  # [batch, 2]
-            'confidence': self.compute_confidence(...)
-        }
-```
+https://github.com/user-attachments/assets/faffda76-62e0-4ba1-a1d6-161e9ffe0449
 
-### **2-Expert MoE Layer:**
 
-```python
-class TwoExpertMoELayer(nn.Module):
-    def __init__(self, input_dim, layer_position, config):
-        # Only 2 experts: Noise + Reverb
-        self.noise_expert = TwoExpertSpecialist(input_dim, 'noise', layer_position, config)
-        self.reverb_expert = TwoExpertSpecialist(input_dim, 'reverb', layer_position, config)
-        
-    def forward(self, x, routing_decision):
-        residual = x
-        expert_weights = routing_decision['expert_weights']  # [batch, 2]
-        
-        # Process with both experts
-        noise_output = self.noise_expert(x)    # [batch, channels, h, w]
-        reverb_output = self.reverb_expert(x)  # [batch, channels, h, w]
-        
-        # Weighted combination
-        noise_weights = expert_weights[:, 0].view(-1, 1, 1, 1)   # [batch, 1, 1, 1] 
-        reverb_weights = expert_weights[:, 1].view(-1, 1, 1, 1)  # [batch, 1, 1, 1]
-        
-        combined_output = noise_weights * noise_output + reverb_weights * reverb_output
-        
-        # Residual connection
-        return residual + combined_output
-```
+- Proposed (without two-stage learning)  
 
-## 📊 **7. Expert Specialization by Layer Position**
+https://github.com/user-attachments/assets/8d747c75-4578-4fbd-8d7b-fb3377a70918
 
-### **Layer-Aware Expert Architecture:**
 
-```python
-class TwoExpertSpecialist(nn.Module):
-    def _build_expert_network(self, config):
-        if self.layer_position == 'bottleneck':
-            # BOTTLENECK: Smaller networks due to high dimensionality
-            hidden_dim = min(self.hidden_dim, 512)
-            
-            if self.expert_type == 'noise':
-                return nn.Sequential(
-                    ComplexConv2d(self.input_dim, hidden_dim, kernel_size=3, padding=1),
-                    ComplexActivation('crelu'),
-                    ComplexConv2d(hidden_dim, self.input_dim, kernel_size=1)
-                )
-            elif self.expert_type == 'reverb':
-                return nn.Sequential(
-                    ComplexConv2d(self.input_dim, hidden_dim, kernel_size=(3, 5), padding=(1, 2)),
-                    ComplexActivation('crelu'),
-                    ComplexConv2d(hidden_dim, self.input_dim, kernel_size=1)
-                )
-        
-        else:
-            # ENCODER/DECODER: Full expert networks
-            if self.expert_type == 'noise':
-                # NOISE EXPERT: Point-wise and local spatial processing
-                return nn.Sequential(
-                    ComplexConv2d(self.input_dim, self.hidden_dim, kernel_size=3, padding=1),
-                    ComplexActivation('crelu'),
-                    ComplexConv2d(self.hidden_dim, self.hidden_dim, kernel_size=3, padding=1),
-                    ComplexActivation('crelu'),
-                    ComplexConv2d(self.hidden_dim, self.input_dim, kernel_size=1)
-                )
-            elif self.expert_type == 'reverb':
-                # REVERB EXPERT: Temporal processing with larger kernels
-                return nn.Sequential(
-                    ComplexConv2d(self.input_dim, self.hidden_dim, kernel_size=(3, 7), padding=(1, 3)),
-                    ComplexActivation('crelu'),
-                    ComplexConv2d(self.hidden_dim, self.hidden_dim, kernel_size=(3, 5), padding=(1, 2)),
-                    ComplexActivation('crelu'),
-                    ComplexConv2d(self.hidden_dim, self.input_dim, kernel_size=1)
-                )
-```
+- Proposed  
 
-## 🎯 **8. Key Implementation Benefits**
+https://github.com/user-attachments/assets/abdeaac9-f4e3-418f-9c1c-7d2b9b2c4cfb
 
-### **1. Consistency Through Global Routing**
-- ONE routing decision used everywhere
-- No conflicts between different S-MoE layers
-- Clear interpretation: "This sample uses 80% noise expert, 20% reverb expert"
+  
+ 
+## References   
+**Monoaural Speech Enhancement Using a Nested U-Net with Two-Level Skip Connections**   
+S. Hwang, S. W. Park, and Y. Park   
+[[paper]](https://www.isca-speech.org/archive/pdfs/interspeech_2022/hwang22b_interspeech.pdf)  [[code]](https://github.com/seorim0/NUNet-TLS)   
 
-### **2. Strategic Placement**
-- **Early Encoder**: Pattern recognition level
-- **Mid Encoder**: Feature extraction level  
-- **Bottleneck**: High-level semantic processing
-- **Mid/Late Decoder**: Reconstruction refinement
 
-### **3. Residual Connections**
-- S-MoE layers enhance features rather than replace them
-- `output = input + expert_processing(input)`
-- Prevents gradient vanishing in deep networks
-
-### **4. Expert Specialization**
-- **Noise Expert**: 3×3 kernels for local denoising
-- **Reverb Expert**: (3×7) and (3×5) kernels for temporal processing
-- **Layer-aware**: Smaller networks at bottleneck, full networks elsewhere
-
-## 🔄 **9. Training Flow**
-
-```python
-# During training, the complete flow:
-for batch in train_loader:
-    clean, noisy, labels = batch['clean'], batch['noisy'], batch['distortion_label']
-    
-    # Forward pass with supervision
-    outputs = model(noisy, labels)  # ← Labels provide routing supervision
-    
-    # The labels guide the router:
-    # labels=[0, 1, 2] means [noise_only, reverb_only, both]
-    # Router learns: label=0 → expert_weights=[1.0, 0.0]
-    #               label=1 → expert_weights=[0.0, 1.0]  
-    #               label=2 → expert_weights=[0.5, 0.5]
-    
-    enhanced = outputs['enhanced_waveform']
-    routing_info = outputs['routing_decision']
-    
-    # Loss computation
-    enhancement_loss = loss_fn(enhanced, clean, noisy)
-    
-    # Optional: Add routing regularization
-    # routing_loss = routing_regularization(routing_info, labels)
-    # total_loss = enhancement_loss + 0.1 * routing_loss
-    
-    enhancement_loss.backward()
-    optimizer.step()
-```
-
-This implementation provides **interpretable**, **consistent**, and **efficient** S-MoE integration into the U-Net architecture! 🚀
+## Contact  
+Please get in touch with us if you have any questions or suggestions.   
+E-mail: allmindfine@yonsei.ac.kr
