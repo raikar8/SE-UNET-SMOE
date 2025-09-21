@@ -20,8 +20,10 @@ def find_pair(noisy_file_name):
     clean_dirs = []
     for i in range(len(noisy_file_name)):
         addrs = noisy_file_name[i]
+        print(addrs)
         if addrs.endswith(".wav"):
             clean_addrs = str(addrs).replace('noisy', 'clean')
+            print(clean_addrs)
             clean_dirs.append(clean_addrs)
     return clean_dirs
 

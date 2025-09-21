@@ -1,0 +1,4 @@
+E:\Research-Projects\SE-UNET-SMOE\log\CNUNet_TB_921_base\models\chkpt_5.pt
+
+Total score
+PESQ: 2.9922  STOI: 0.9313  CSIG 4.3869  CBAK 3.1102  COVL 3.6971  SSNR 3.0077
