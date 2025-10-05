@@ -21,7 +21,7 @@ class Options:
         parser.add_argument('--loss_type', type=str, default='mag+real+imag', help='loss function type')
         parser.add_argument('--loss_oper', type=str, default='l2', help='loss function operation type')
         parser.add_argument('--c', type=list, default=[0.1, 0.9, 0.2, 0.05], help='coupling constant')
-        parser.add_argument('--device', type=str, default='cuda', help='gpu or cpu')
+        parser.add_argument('--device', type=str, default='cuda', help='gpu or cpu or mps')
 
         parser.add_argument('--stage1_training', type=bool, default=False, help='')
         parser.add_argument('--stage2_training', type=bool, default=False, help='')
