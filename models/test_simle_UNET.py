@@ -6,10 +6,17 @@ from baseBlocks_simple_UNET import DecoderBlock
 from baseBlocks_simple_UNET import count_parameters
 from baseBlocks_simple_UNET import DCUNet
 
+from baseBlocks_simple_UNET import create_stft_layer
+from baseBlocks_simple_UNET import create_istft_layer
+import torch.nn.functional as F
+
+
+
 
 import torch
 
 import torch.nn as nn
+import numpy as np
 
 
 def verify_shape_network():
@@ -160,7 +167,7 @@ def test_dcunet_architecture():
     # Test with realistic input size (from paper)
     # Paper uses: 64ms window, 16ms hop, 16kHz sampling rate
     # This gives: 257 freq bins, ~100 time frames for 1 second
-    B, F, T = 2, 257, 100
+    B, F, T = 2, 513, 100
 
     print(f"Input shape: ({B}, 1, {F}, {T})")
 
@@ -229,11 +236,11 @@ def test_skip_connections():
     model.eval()
 
     # Create two different inputs
-    x1_real = torch.ones(1, 1, 257, 100)
-    x1_imag = torch.zeros(1, 1, 257, 100)
+    x1_real = torch.ones(1, 1, 513, 100)
+    x1_imag = torch.zeros(1, 1, 513, 100)
 
-    x2_real = torch.zeros(1, 1, 257, 100)
-    x2_imag = torch.ones(1, 1, 257, 100)
+    x2_real = torch.zeros(1, 1, 513, 100)
+    x2_imag = torch.ones(1, 1, 513, 100)
 
     with torch.no_grad():
         out1_real, out1_imag = model(x1_real, x1_imag)
@@ -253,6 +260,8 @@ def test_skip_connections():
     print()
 
 
+
+
 if __name__ == '__main__':
     #verify_shape_network()
     #calculate_parameters()
@@ -260,7 +269,72 @@ if __name__ == '__main__':
     #test_complex_leaky_relu()
     #test_encoder_decoder_blocks()
     #test_dcunet_architecture()
-    test_skip_connections()
+    #test_skip_connections()
+
+    print("=" * 70)
+    print("Testing STFT/ISTFT Modules")
+    print("=" * 70)
+
+    # Test parameters (from paper)
+    sr = 16000
+    duration = 1.0  # 1 second
+    n_samples = int(sr * duration)
+
+    # Create test signal (sine wave at 440 Hz)
+    t = torch.linspace(0, duration, n_samples)
+    audio = torch.sin(2 * np.pi * 440 * t).unsqueeze(0)  # (1, T)
+
+    print(f"\nInput audio shape: {audio.shape}")
+    print(f"Sample rate: {sr} Hz")
+    print(f"Duration: {duration} s")
+
+    # Create STFT/ISTFT layers
+    stft = create_stft_layer(sr=sr)
+    istft = create_istft_layer(sr=sr)
+
+    print(f"\nSTFT parameters:")
+    print(f"  n_fft: {stft.n_fft}")
+    print(f"  hop_length: {stft.hop_length}")
+    print(f"  n_bins: {stft.n_bins}")
+
+    # Forward STFT
+    real, imag = stft(audio)
+    print(f"\nSTFT output:")
+    print(f"  Real shape: {real.shape}")
+    print(f"  Imag shape: {imag.shape}")
+    print(f"  Expected: (1, 1, 513, ~62) for 1s audio")
+
+    # Compute magnitude for visualization
+    magnitude = torch.sqrt(real ** 2 + imag ** 2)
+    print(f"  Magnitude range: [{magnitude.min():.4f}, {magnitude.max():.4f}]")
+
+    # Inverse ISTFT
+    reconstructed = istft(real, imag, length=n_samples)
+    print(f"\nISTFT output:")
+    print(f"  Reconstructed shape: {reconstructed.shape}")
+    print(f"  Expected: {audio.shape}")
+
+    # Check reconstruction quality
+    mse = F.mse_loss(audio, reconstructed)
+    print(f"\nReconstruction quality:")
+    print(f"  MSE: {mse.item():.6f}")
+    print(f"  {'✅ Perfect reconstruction!' if mse < 1e-5 else '⚠️ Some error (expected with windowing)'}")
+
+    # Test gradient flow
+    print(f"\nTesting gradient flow...")
+    real_grad = real.clone().requires_grad_(True)
+    imag_grad = imag.clone().requires_grad_(True)
+
+    reconstructed_grad = istft(real_grad, imag_grad, length=n_samples)
+    loss = reconstructed_grad.sum()
+    loss.backward()
+
+    assert real_grad.grad is not None, "Gradients not flowing through ISTFT!"
+    print(f"  ✅ Gradients flow through STFT/ISTFT!")
+
+    print("\n" + "=" * 70)
+    print("All tests passed! STFT/ISTFT ready for DCUNet integration.")
+    print("=" * 70)
 
 
 

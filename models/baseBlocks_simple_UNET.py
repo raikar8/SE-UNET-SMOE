@@ -464,6 +464,299 @@ def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
+class STFT(nn.Module):
+    """
+    Short-Time Fourier Transform as a differentiable layer.
+
+    Implements STFT using 1D convolution with fixed DFT basis functions.
+    This allows gradients to flow through for end-to-end training.
+
+    Args:
+        n_fft: FFT size (default: 1024, gives 513 freq bins)
+        hop_length: Hop size between frames (default: 256)
+        win_length: Window length (default: 1024, same as n_fft)
+        window: Window type (default: 'hann')
+        center: Whether to pad signal for centered frames (default: True)
+        normalized: Whether to normalize STFT (default: False)
+
+    Input:
+        audio: (B, T) or (B, 1, T) waveform
+
+    Output:
+        real: (B, 1, F, T) - Real part of STFT
+        imag: (B, 1, F, T) - Imaginary part of STFT
+        where F = n_fft//2 + 1 = 513 for n_fft=1024
+    """
+
+    def __init__(self, n_fft: int=1024, hop_length: int=256, win_length: Optional[int] = None, window: str='hann', center: bool = True, normalized: bool = False):
+        super().__init__()
+
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.win_length = win_length or n_fft
+        #self.window = window
+        self.center = center
+        self.normalized = normalized
+
+        # Number of frequency bins (positive frequencies only)
+        self.n_bins = self.n_fft // 2 + 1
+
+        if window == 'hann':
+            window_fn = torch.hann_window(self.win_length, periodic=True)
+        elif window == 'hamming':
+            window_fn = torch.hamming_window(self.win_length, periodic=True)
+        else:
+            window_fn = torch.ones(self.win_length)
+
+        # Pad window to n_fft if needed
+
+        if self.win_length < self.n_fft:
+            pad_left = (self.n_fft - self.win_length) // 2
+            pad_right = self.n_fft - self.win_length - pad_left
+            window_fn = F.pad(window_fn, (pad_left, pad_right))
+
+        # ================================================================
+        # Create DFT basis (Fourier basis functions)
+        # ================================================================
+        # For n_fft=1024, we create 513 cos and 513 sin basis functions
+
+        # Frequency indices: [0, 1, 2, ..., n_fft//2]
+        freq_bins = torch.arange(0, self.n_bins)
+
+        # Time indices: [0, 1, 2, ..., n_fft-1]
+        time_bins = torch.arange(0, self.n_fft)
+
+        # DFT matrix: exp(-2πi * freq * time / n_fft)
+        # Real part: cos(-2π * freq * time / n_fft)
+        # Imag part: sin(-2π * freq * time / n_fft)
+
+        # Shape: (n_bins, n_fft)
+        dft_real = torch.cos(
+            -2 * np.pi * freq_bins.unsqueeze(1) * time_bins.unsqueeze(0) / self.n_fft
+        )
+        dft_imag = torch.sin(
+            -2 * np.pi * freq_bins.unsqueeze(1) * time_bins.unsqueeze(0) / self.n_fft
+        )
+
+        # Apply window to each basis function
+        dft_real = dft_real * window_fn.unsqueeze(0)
+        dft_imag = dft_imag * window_fn.unsqueeze(0)
+
+        # Normalize if requested (not used in paper)
+        if normalized:
+            dft_real = dft_real / self.n_fft
+            dft_imag = dft_imag / self.n_fft
+
+        # Register as non-trainable parameters (buffers)
+        # Shape: (n_bins, 1, n_fft) for conv1d
+        self.register_buffer('dft_real', dft_real.unsqueeze(1))
+        self.register_buffer('dft_imag', dft_imag.unsqueeze(1))
+
+        # Store window for ISTFT compatibility
+        self.register_buffer('window', window_fn)
+
+    def forward(self, audio: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+                Apply STFT to audio.
+
+                Args:
+                    audio: (B, T) or (B, 1, T) waveform
+
+                Returns:
+                    real: (B, 1, F, T_frames) - Real part
+                    imag: (B, 1, F, T_frames) - Imaginary part
+        """
+
+        # Handle input shape
+        if audio.dim() == 2:
+            audio = audio.unsqueeze(1)  # (B, T) -> (B, 1, T)
+
+        # Center padding (like librosa.stft with center=True)
+        if self.center:
+            pad_amount = self.n_fft // 2
+            audio = F.pad(audio, (pad_amount, pad_amount), mode='reflect')
+
+        # Apply convolution with DFT basis
+        # Conv1d expects (B, C_in, L)
+        # Our audio is (B, 1, T)
+        # Our filters are (C_out, C_in, kernel_size) = (n_bins, 1, n_fft)
+
+        real = F.conv1d(audio, self.dft_real, stride=self.hop_length)
+        imag = F.conv1d(audio, self.dft_imag, stride=self.hop_length)
+
+        # Output shape: (B, n_bins, T_frames)
+        # We want: (B, 1, F, T) to match DCUNet input
+        # So we unsqueeze at dim=1
+
+        real = real.unsqueeze(1)  # (B, 1, F, T)
+        imag = imag.unsqueeze(1)  # (B, 1, F, T)
+
+        return real, imag
+
+
+class ISTFT(nn.Module):
+    def __init__(
+            self,
+            n_fft: int = 1024,
+            hop_length: int = 256,
+            win_length: Optional[int] = None,
+            window: str = 'hann',
+            center: bool = True,
+            normalized: bool = False
+    ):
+        super().__init__()
+
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.win_length = win_length or n_fft
+        self.center = center
+        self.normalized = normalized
+        self.n_bins = n_fft // 2 + 1
+
+        # Window
+        if window == 'hann':
+            window_fn = torch.hann_window(self.win_length, periodic=True)
+        elif window == 'hamming':
+            window_fn = torch.hamming_window(self.win_length, periodic=True)
+        else:
+            window_fn = torch.ones(self.win_length)
+
+        if self.win_length < n_fft:
+            pad_left = (n_fft - self.win_length) // 2
+            pad_right = n_fft - self.win_length - pad_left
+            window_fn = F.pad(window_fn, (pad_left, pad_right))
+
+        # IDFT basis
+        freq_bins = torch.arange(0, self.n_bins).float()
+        time_bins = torch.arange(0, n_fft).float()
+
+        # Shape: (n_bins, n_fft)
+        idft_real = torch.cos(2 * np.pi * freq_bins.unsqueeze(1) * time_bins.unsqueeze(0) / n_fft)
+        idft_imag = torch.sin(2 * np.pi * freq_bins.unsqueeze(1) * time_bins.unsqueeze(0) / n_fft)
+
+        # Apply window: (n_bins, n_fft) * (n_fft,) -> (n_bins, n_fft)
+        idft_real = idft_real * window_fn.unsqueeze(0)
+        idft_imag = idft_imag * window_fn.unsqueeze(0)
+
+        # Scale: (n_bins, 1)
+        scale = torch.ones(self.n_bins, 1) * 2.0 / n_fft
+        scale[0] = 1.0 / n_fft
+        if n_fft % 2 == 0:
+            scale[-1] = 1.0 / n_fft
+
+        if not normalized:
+            idft_real = idft_real * scale
+            idft_imag = idft_imag * scale
+
+        # Register: final shape MUST be (n_bins, n_fft)
+        self.register_buffer('idft_real', idft_real)
+        self.register_buffer('idft_imag', idft_imag)
+
+    def forward(self, real: torch.Tensor, imag: torch.Tensor, length: Optional[int] = None) -> torch.Tensor:
+        B, _, n_freq, n_frames = real.shape
+
+        real = real.squeeze(1)  # (B, F, T)
+        imag = imag.squeeze(1)
+
+        print(f"  Real part: {real.shape}")
+
+        audio_length = self.hop_length * (n_frames - 1) + self.n_fft
+        audio = torch.zeros(B, audio_length, device=real.device, dtype=real.dtype)
+
+        for b in range(B):
+            for t in range(n_frames):
+                real_frame = real[b, :, t]  # (F,)
+                imag_frame = imag[b, :, t]
+
+                # (F,) @ (F, n_fft) -> (n_fft,)
+                frame_audio = torch.matmul(real_frame, self.idft_real) - torch.matmul(imag_frame, self.idft_imag)
+
+                start = t * self.hop_length
+                audio[b, start:start + self.n_fft] += frame_audio
+
+        if self.center:
+            pad_amount = self.n_fft // 2
+            audio = audio[:, pad_amount:-pad_amount] if length is None else audio[:, pad_amount:pad_amount + length]
+        elif length is not None:
+            audio = audio[:, :length]
+
+        return audio
+
+
+
+# ==============================================================================
+# Convenience Functions
+# ==============================================================================
+
+def create_stft_layer(
+        sr: int = 16000,
+        n_fft: int = 1024,
+        hop_length: int = 256,
+        win_length: Optional[int] = None
+) -> STFT:
+    """
+    Create STFT layer with paper's default parameters.
+
+    Paper settings (Section 4.1):
+    - Sample rate: 16kHz
+    - Window: 64ms Hann window = 1024 samples at 16kHz
+    - Hop: 16ms = 256 samples at 16kHz
+    - Gives 513 frequency bins
+
+    Args:
+        sr: Sample rate (Hz)
+        n_fft: FFT size
+        hop_length: Hop size in samples
+        win_length: Window length in samples
+
+    Returns:
+        STFT layer configured for DCUNet
+    """
+    return STFT(
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=win_length,
+        window='hann',
+        center=True,
+        normalized=False
+    )
+
+
+def create_istft_layer(
+        sr: int = 16000,
+        n_fft: int = 1024,
+        hop_length: int = 256,
+        win_length: Optional[int] = None
+) -> ISTFT:
+    """
+    Create ISTFT layer matching STFT parameters.
+
+    Args:
+        sr: Sample rate (Hz)
+        n_fft: FFT size
+        hop_length: Hop size in samples
+        win_length: Window length in samples
+
+    Returns:
+        ISTFT layer configured for DCUNet
+    """
+    return ISTFT(
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=win_length,
+        window='hann',
+        center=True,
+        normalized=False
+    )
+
+
+
+
+
+
+
+
+
 
 
 
